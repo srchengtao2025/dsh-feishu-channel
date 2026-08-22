@@ -8,22 +8,24 @@
 
 `dsh-feishu-channel` is a community-maintained plugin that connects a DeepSeek Harness instance to a Feishu/Lark custom enterprise app over a WebSocket long connection. The Harness server can remain bound to loopback and does not need a new public inbound port.
 
-> Status: Developer Preview. Version 0.8.1 is developed and tested against DeepSeek Harness `0.1.0-rc.5`. Re-run the test suite after upgrading Harness.
+> Status: Developer Preview. Version 0.10.1 is developed and tested against DeepSeek Harness `0.1.0-rc.8`. Re-run the test suite after upgrading Harness.
 
 ## Features
 
 - Web and CLI configuration with credentials stored through the Harness credential service.
+- Explicit Feishu domestic or Lark international API-domain selection.
 - Private-chat access and optional group `@bot` handling with an `open_id` allowlist.
 - Persistent Harness sessions mapped to Feishu conversations.
-- Streaming replies using native CardKit when available, with automatic text-edit fallback.
+- Configurable streaming replies using native CardKit when available, with automatic text-edit fallback.
 - Bidirectional workspace-scoped file transfer, including a `feishu_send_file` agent tool.
+- Read-only local RAG over a configured Feishu/Lark Wiki through `feishu_kb_search` and `feishu_kb_read` tools with source URLs.
 - One-time approval cards for privileged Harness operations.
 - Short-lived Web UI URLs for explicitly allowlisted users.
 - Message deduplication, per-chat serialization, filename sanitization, size limits, and workspace boundary checks.
 
 ## Requirements
 
-- DeepSeek Harness `0.1.0-rc.5`
+- DeepSeek Harness `0.1.0-rc.8`
 - Node.js 22 or later
 - A Feishu custom enterprise app with bot capability enabled
 
@@ -32,7 +34,14 @@
 Download the latest `dsh-feishu-channel-*.tgz` from GitHub Releases and install it into the Harness Web profile:
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.8.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+```
+
+If the first install reports `ERR_PNPM_IGNORED_BUILDS`, pnpm will add a pending `protobufjs` entry to the Web profile's `pnpm-workspace.yaml`. Its lifecycle script is not required by this plugin; explicitly set the generated placeholder to `false`, keep DSH's strict supply-chain policy enabled, and rerun the install:
+
+```yaml
+allowBuilds:
+  protobufjs: false
 ```
 
 To build from source:
@@ -43,7 +52,7 @@ cd dsh-feishu-channel
 npm ci
 npm test
 npm pack
-dsh plugin --profile web add ./dsh-feishu-channel-0.8.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
 ```
 
 Restart Harness, keep it bound to loopback, and open the configuration page through an SSH tunnel:

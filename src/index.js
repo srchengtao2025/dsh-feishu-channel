@@ -12,6 +12,7 @@ import { FileTransferManager, formatBytes, parseFileCommand } from './file-trans
 import { parseFeishuMessageEvent } from './message.js'
 import { SafeStreamRelay } from './stream-relay.js'
 import { parseWebUiCommand, WebUiTunnelManager } from './webui-tunnel.js'
+import { KnowledgeBaseManager } from './knowledge-base.js'
 
 export const name = 'feishu-channel'
 export const inject = ['settings', 'credentials', 'webServer', 'agents', 'agentDefaultModel', 'agentPresets', 'tools']
@@ -19,13 +20,19 @@ export const Config = z.object({})
 
 const SettingsSchema = z.object({
   enabled: z.boolean().default(DEFAULT_CONFIG.enabled),
+  domain: z.union(['feishu', 'lark']).default(DEFAULT_CONFIG.domain),
   appId: z.string().default(DEFAULT_CONFIG.appId),
   allowedOpenIds: z.array(z.string()).default(DEFAULT_CONFIG.allowedOpenIds),
   defaultWorkspace: z.string().default(DEFAULT_CONFIG.defaultWorkspace),
   allowGroupAt: z.boolean().default(DEFAULT_CONFIG.allowGroupAt),
   acknowledgement: z.string().default(DEFAULT_CONFIG.acknowledgement),
+  streamingEnabled: z.boolean().default(DEFAULT_CONFIG.streamingEnabled),
   fileTransferEnabled: z.boolean().default(DEFAULT_CONFIG.fileTransferEnabled),
   maxFileSizeMb: z.number().default(DEFAULT_CONFIG.maxFileSizeMb),
+  knowledgeBaseEnabled: z.boolean().default(DEFAULT_CONFIG.knowledgeBaseEnabled),
+  knowledgeBaseUrl: z.string().default(DEFAULT_CONFIG.knowledgeBaseUrl),
+  knowledgeBaseSyncMinutes: z.number().default(DEFAULT_CONFIG.knowledgeBaseSyncMinutes),
+  knowledgeBaseMaxResults: z.number().default(DEFAULT_CONFIG.knowledgeBaseMaxResults),
 })
 
 export async function apply(ctx) {
@@ -45,8 +52,10 @@ export async function apply(ctx) {
     openResource: message => channel.openMessageResource(message),
     sendFile: (message, file) => channel.sendFileReply(message, file),
   })
+  const knowledge = new KnowledgeBaseManager({ logger })
   const bridge = new AgentBridge(ctx, {
     logger,
+    knowledgeBase: knowledge,
     sendApproval: (messageId, approval) => channel.replyApprovalCard(messageId, approval),
     sendFile: async (message, workspace, path) => {
       const config = normalizeConfig(settings.get()).config
@@ -63,7 +72,9 @@ export async function apply(ctx) {
   function reconfigure() {
     applying = applying.catch(() => undefined).then(async () => {
       const config = normalizeConfig(settings.get()).config
-      await channel.configure(config, await secretValue())
+      const appSecret = await secretValue()
+      await channel.configure(config, appSecret)
+      await knowledge.configure(config, appSecret)
     }).catch(error => {
       logger.error(`应用飞书配置失败：${error instanceof Error ? error.message : String(error)}`)
       channel.setStatus('error', error instanceof Error ? error.message : String(error))
@@ -150,11 +161,17 @@ export async function apply(ctx) {
     if (!message.text.startsWith('/')) {
       try {
         const taskMessage = files.attachPending(message)
-        await channel.streamReply(taskMessage, config.acknowledgement, async controller => {
-          const stream = new SafeStreamRelay(controller)
-          const response = await bridge.handle(taskMessage, config.defaultWorkspace, stream)
-          await stream.complete(response)
-        })
+        if (config.streamingEnabled) {
+          await channel.streamReply(taskMessage, config.acknowledgement, async controller => {
+            const stream = new SafeStreamRelay(controller)
+            const response = await bridge.handle(taskMessage, config.defaultWorkspace, stream)
+            await stream.complete(response)
+          })
+        } else {
+          if (config.acknowledgement) await channel.replyText(taskMessage.messageId, config.acknowledgement)
+          const response = await bridge.handle(taskMessage, config.defaultWorkspace)
+          await channel.replyText(taskMessage.messageId, response)
+        }
       } catch (error) {
         logger.error(`DSH 流式任务失败：${error instanceof Error ? error.stack : String(error)}`)
         await channel.replyText(message.messageId, `任务执行失败：${error instanceof Error ? error.message : String(error)}`)
@@ -178,6 +195,7 @@ export async function apply(ctx) {
       secretConfigured: secretInfo.configured,
       secretWritable: secretInfo.writable,
       status: channel.snapshot(),
+      knowledgeBaseStatus: knowledge.snapshot(),
     }
   }
 
@@ -217,7 +235,7 @@ export async function apply(ctx) {
           return sendJson(res, 400, { ok: false, error: '启用通道前必须配置 App Secret' })
         }
         if (config.enabled && body.confirmEnable === true) {
-          await testFeishuCredentials({ appId: config.appId, appSecret: await secretValue() })
+          await testFeishuCredentials({ appId: config.appId, appSecret: await secretValue(), domain: config.domain })
         }
         await settings.replace(config)
         await reconfigure()
@@ -234,7 +252,8 @@ export async function apply(ctx) {
         const appId = String(body.appId ?? settings.get().appId).trim()
         const appSecret = String(body.appSecret ?? '').trim() || await secretValue()
         if (!appId || !appSecret) return sendJson(res, 400, { ok: false, error: '请先填写 App ID 和 App Secret' })
-        await testFeishuCredentials({ appId, appSecret })
+        const domain = String(body.domain ?? settings.get().domain ?? DEFAULT_CONFIG.domain).trim().toLowerCase()
+        await testFeishuCredentials({ appId, appSecret, domain })
         sendJson(res, 200, { ok: true, message: '凭据有效，可以获取 tenant_access_token。' })
       }).catch(error => sendJson(res, error?.statusCode || 500, { ok: false, error: error instanceof Error ? error.message : String(error) }))
     } }),
@@ -246,6 +265,7 @@ export async function apply(ctx) {
     unwatch()
     for (const dispose of routes) dispose()
     channel.close()
+    knowledge.close()
     return Promise.allSettled([bridge.dispose(), webUi.stop()])
   }, 'feishu-channel.lifecycle')
 }

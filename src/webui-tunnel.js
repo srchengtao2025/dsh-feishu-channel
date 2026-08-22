@@ -29,18 +29,44 @@ function cookieValue(header, name) {
   return undefined
 }
 
-export function authorizeWebUiRequest(req, token) {
+export function authorizeWebUiRequest(req, token, maxAgeSeconds = 3600) {
   const prefix = `/${token}`
   const cookie = cookieValue(req.headers.cookie, 'dsh_webui')
   if (cookie === token) return { allowed: true, path: req.url }
   const rawUrl = String(req.url ?? '/')
   if (rawUrl !== prefix && !rawUrl.startsWith(`${prefix}/`)) return { allowed: false }
   const path = rawUrl.slice(prefix.length) || '/'
-  return { allowed: true, path, setCookie: `dsh_webui=${token}; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Strict` }
+  return { allowed: true, path, setCookie: `dsh_webui=${token}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; Secure; SameSite=Strict` }
+}
+
+export function buildUpstreamHeaders(headers, targetPort, connection = 'close') {
+  const localOrigin = `http://127.0.0.1:${targetPort}`
+  const upstreamHeaders = {
+    ...headers,
+    host: `127.0.0.1:${targetPort}`,
+    connection,
+  }
+
+  // DSH validates browser origins against its local listener. Requests arrive
+  // through a public trycloudflare.com origin, so normalize browser-controlled
+  // origin metadata before forwarding it to the loopback-only DSH service.
+  if (upstreamHeaders.origin) upstreamHeaders.origin = localOrigin
+  if (upstreamHeaders.referer) {
+    try {
+      const referer = new URL(String(upstreamHeaders.referer))
+      upstreamHeaders.referer = `${localOrigin}${referer.pathname}${referer.search}${referer.hash}`
+    } catch {
+      delete upstreamHeaders.referer
+    }
+  }
+  delete upstreamHeaders.forwarded
+  delete upstreamHeaders['x-forwarded-host']
+  delete upstreamHeaders['x-forwarded-proto']
+  return upstreamHeaders
 }
 
 export class WebUiTunnelManager {
-  constructor({ logger, cloudflaredPath = '/usr/local/bin/cloudflared', targetPort = 3080 } = {}) {
+  constructor({ logger, cloudflaredPath = process.env.DSH_CLOUDFLARED_PATH || 'cloudflared', targetPort = 3080 } = {}) {
     this.logger = logger ?? console
     this.cloudflaredPath = cloudflaredPath
     this.targetPort = targetPort
@@ -60,7 +86,7 @@ export class WebUiTunnelManager {
     await this.stop()
     const token = randomBytes(24).toString('hex')
     this.proxyServer = http.createServer((req, res) => {
-      const auth = authorizeWebUiRequest(req, token)
+      const auth = authorizeWebUiRequest(req, token, minutes * 60)
       if (!auth.allowed) {
         res.writeHead(404, { 'cache-control': 'no-store' })
         res.end('Not found')
@@ -70,7 +96,7 @@ export class WebUiTunnelManager {
       this.proxyHttp(req, res, auth.setCookie)
     })
     this.proxyServer.on('upgrade', (req, socket, head) => {
-      const auth = authorizeWebUiRequest(req, token)
+      const auth = authorizeWebUiRequest(req, token, minutes * 60)
       if (!auth.allowed) {
         socket.destroy()
         return
@@ -111,7 +137,13 @@ export class WebUiTunnelManager {
       }
       child.stdout.on('data', consume)
       child.stderr.on('data', consume)
-      child.once('error', error => finish(error))
+      child.once('error', error => {
+        if (error?.code === 'ENOENT') {
+          finish(new Error(`未找到 cloudflared（命令：${this.cloudflaredPath}），请先安装或设置 DSH_CLOUDFLARED_PATH`))
+          return
+        }
+        finish(error)
+      })
       child.once('exit', code => {
         if (!settled) finish(new Error(`cloudflared 提前退出，退出码 ${code ?? 'unknown'}`))
       })
@@ -141,7 +173,7 @@ export class WebUiTunnelManager {
   }
 
   proxyHttp(req, res, setCookie) {
-    const headers = { ...req.headers, host: `127.0.0.1:${this.targetPort}`, connection: 'close' }
+    const headers = buildUpstreamHeaders(req.headers, this.targetPort)
     const upstream = http.request({
       hostname: '127.0.0.1',
       port: this.targetPort,
@@ -151,10 +183,13 @@ export class WebUiTunnelManager {
       agent: false,
     }, upstreamRes => {
       const responseHeaders = { ...upstreamRes.headers }
-      if (setCookie) responseHeaders['set-cookie'] = [
-        ...(Array.isArray(responseHeaders['set-cookie']) ? responseHeaders['set-cookie'] : []),
-        setCookie,
-      ]
+      if (setCookie) {
+        const upstreamCookies = responseHeaders['set-cookie']
+        responseHeaders['set-cookie'] = [
+          ...(Array.isArray(upstreamCookies) ? upstreamCookies : upstreamCookies ? [upstreamCookies] : []),
+          setCookie,
+        ]
+      }
       res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders)
       upstreamRes.pipe(res)
     })
@@ -173,7 +208,7 @@ export class WebUiTunnelManager {
   proxyWebSocket(req, socket, head) {
     const upstream = net.connect(this.targetPort, '127.0.0.1')
     upstream.once('connect', () => {
-      const headers = { ...req.headers, host: `127.0.0.1:${this.targetPort}`, connection: 'Upgrade' }
+      const headers = buildUpstreamHeaders(req.headers, this.targetPort, 'Upgrade')
       const request = [
         `${req.method} ${req.url} HTTP/${req.httpVersion}`,
         ...Object.entries(headers).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`),

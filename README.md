@@ -8,16 +8,23 @@
 
 `dsh-feishu-channel` 是一个社区维护的 DeepSeek Harness 插件，为 Harness 增加飞书企业自建应用消息通道。它通过飞书长连接接收事件，不要求服务器开放新的公网端口。
 
-> 项目状态：Developer Preview。当前版本针对 DeepSeek Harness `0.1.0-rc.5` 开发和验证；Harness 仍在快速演进，升级核心后请重新运行测试。
+> 项目状态：Developer Preview。当前版本针对 DeepSeek Harness `0.1.0-rc.8` 开发和验证；Harness 仍在快速演进，升级核心后请重新运行测试。
 
 ## 快速安装
 
-环境要求：DeepSeek Harness `0.1.0-rc.5`、Node.js 22 或更高版本，以及一个启用了机器人能力的飞书企业自建应用。
+环境要求：DeepSeek Harness `0.1.0-rc.8`、Node.js 22 或更高版本，以及一个启用了机器人能力的飞书企业自建应用。
 
 从 GitHub Releases 下载最新的 `dsh-feishu-channel-*.tgz`，然后安装到 Harness Web profile：
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.8.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+```
+
+如果首次安装出现 `ERR_PNPM_IGNORED_BUILDS`，pnpm 会在 Web profile 的 `pnpm-workspace.yaml` 中生成 `protobufjs` 待审核项。这个生命周期脚本不是插件运行所必需的，可将生成的占位值明确改为 `false`，保留 DSH 的严格供应链保护，然后重新执行安装：
+
+```yaml
+allowBuilds:
+  protobufjs: false
 ```
 
 如果你希望从源码构建：
@@ -28,18 +35,20 @@ cd dsh-feishu-channel
 npm ci
 npm test
 npm pack
-dsh plugin --profile web add ./dsh-feishu-channel-0.8.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
 ```
 
 ## 当前能力
 
 - 在 DSH 本地 Web 服务中提供 `/feishu-channel` 配置页。
+- 支持显式选择飞书国内版或 Lark 国际版 API 域。
 - App Secret 写入 DSH credentials，不进入 settings，不会从配置 API 回显。
 - 允许用户 `open_id` 白名单；空白名单时私聊默认允许，群聊仍要求白名单。
 - 私聊控制，以及可选的群聊 `@机器人` 控制。
 - 每个飞书会话映射一个持久化 DSH Session，支持 `/new`、`/stop`、`/status`。
-- 普通任务实时转发 DSH 文本增量；优先使用飞书 CardKit 原生流式卡片，权限不可用时自动降级为编辑文本消息。
+- 普通任务可开关流式输出；启用时优先使用飞书 CardKit 原生流式卡片，权限不可用时自动降级为编辑文本消息。
 - 支持双向文件传输：飞书上传文件会安全保存并关联下一条任务；Agent 可用 `feishu_send_file` 回传生成物，也可手动执行 `/file send`。
+- 支持把指定飞书/Lark Wiki 作为本地只读 RAG，向 Agent 提供 `feishu_kb_search` 与 `feishu_kb_read` 工具，并返回可引用的来源链接。
 - DSH 请求越权操作时发送一次性飞书审批卡片，同时支持 `/approve`、`/reject` 文字命令。
 - 允许白名单用户通过 `/webui` 生成短时 Web UI 地址，默认 30 分钟、最长 60 分钟，到期自动关闭。
 - 使用 `message_id` 做进程内幂等去重，按飞书会话串行处理任务。
@@ -57,7 +66,7 @@ npm pack
 安装到 DSH 的 Web profile：
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.8.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
 ```
 
 重启 DSH 后，通过 SSH 隧道打开配置页：
@@ -110,6 +119,10 @@ dsh-feishu-config allow remove ou_xxx
 dsh-feishu-config disable
 dsh-feishu-config set --group-at
 dsh-feishu-config set --no-group-at
+dsh-feishu-config set --domain feishu
+dsh-feishu-config set --domain lark
+dsh-feishu-config set --streaming
+dsh-feishu-config set --no-streaming
 dsh-feishu-config set --files --max-file-mb 30
 dsh-feishu-config set --no-files
 dsh-feishu-config set --clear-app-secret --disable
@@ -156,7 +169,13 @@ dsh-model-config credential unset --ref DEEPSEEK_API_KEY
 
 命令会启动一个 Cloudflare Quick Tunnel，并返回带随机访问令牌的临时 URL。默认有效期 30 分钟，最长 60 分钟。URL 是持有即访问凭证，请勿转发；到期或执行 `/webui stop` 后自动失效。
 
-服务器需要安装 `/usr/local/bin/cloudflared`。Quick Tunnel 由 Cloudflare 分配随机 `trycloudflare.com` 子域名，适合临时调试，不适合作为长期生产入口。
+服务器需要安装 `cloudflared` 并确保它在服务的 `PATH` 中；也可以通过 `DSH_CLOUDFLARED_PATH` 指定绝对路径。Quick Tunnel 由 Cloudflare 分配随机 `trycloudflare.com` 子域名，适合临时调试，不适合作为长期生产入口。
+
+## 飞书/Lark 知识库 RAG
+
+在 `/feishu-channel` 配置页启用知识库检索并填写一个 `/wiki/<token>` 链接。插件会把可读取的新版文档正文同步到工作区内的 `.dsh-feishu/knowledge-index.json`，按段落切片并提供本地检索，不会把整库无条件注入模型上下文。
+
+当前应用若只有入口文档权限，插件会索引该文档并显示 `partial`；要遍历整个知识空间，还需要把应用加入目标知识空间并授予只读权限。索引上限为 500 篇文档或 200 万字符，检索结果始终包含原始文档链接。
 
 ## 飞书后台配置
 

@@ -1,10 +1,11 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { errorFromTurnEnd, hasUnparsedToolProtocol, textDeltaFromAssistantChunk, textFromAssistantMessage } from './message.js'
 import { installAgentModelSelection } from './model-selection.js'
 import { resolveDefaultAgentPreset } from './preset-composition.js'
+import { stableFeishuSessionId } from './session-id.js'
 
 const HELP = [
   '可用命令：',
@@ -16,18 +17,12 @@ const HELP = [
   '/reject <代码> 拒绝待审批操作',
 ].join('\n')
 
-function stableSessionId(chatKey) {
-  const digest = createHash('sha256').update(chatKey).digest('hex').slice(0, 24)
-  // v2 starts clean after the channel learned to mount the deployment preset.
-  // Old bare-Agent sessions may contain textual DSML that must not be replayed.
-  return SessionId(`feishu-v2-${digest}`)
-}
-
 export class AgentBridge {
-  constructor(ctx, { sendApproval, sendFile, logger }) {
+  constructor(ctx, { sendApproval, sendFile, knowledgeBase, logger }) {
     this.ctx = ctx
     this.sendApproval = sendApproval
     this.sendFile = sendFile
+    this.knowledgeBase = knowledgeBase
     this.logger = logger
     this.sessions = new Map()
     this.sessionIds = new Map()
@@ -110,9 +105,9 @@ export class AgentBridge {
     const existing = this.sessions.get(chatId)
     if (existing) return existing
     const state = { handle: undefined, workspace, outputs: [], error: undefined, activeMessage: undefined, activeStream: undefined }
-    const sessionId = this.sessionIds.get(chatId) ?? stableSessionId(chatId)
-    this.sessionIds.set(chatId, sessionId)
     const preset = await resolveDefaultAgentPreset(this.ctx.agentPresets)
+    const sessionId = this.sessionIds.get(chatId) ?? SessionId(stableFeishuSessionId(chatId, preset.id))
+    this.sessionIds.set(chatId, sessionId)
     const setup = async agentCtx => {
       const currentSelection = () => this.ctx.agentDefaultModel.currentSelection()
       const selected = {
@@ -143,6 +138,65 @@ export class AgentBridge {
           return { name: file.name, bytes: file.bytes }
         },
         presentCall: args => ({ card: 'generic', title: `Send file to Feishu: ${args.path}`, kind: 'execute', rawInput: args.path }),
+      }))
+      agentCtx.tools.register(defineTool({
+        name: 'feishu_kb_search',
+        description: 'Search the configured Feishu/Lark knowledge base before answering questions that may depend on internal company knowledge. Return concise indexed excerpts with source titles and URLs; cite those sources in the answer.',
+        parameters: {
+          query: { type: 'string', required: true, description: 'A focused natural-language search query.' },
+          topK: { type: 'integer', description: 'Number of results from 1 to 10.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              query: { type: 'string', required: true },
+              results: {
+                type: 'array',
+                required: true,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    nodeToken: { type: 'string', required: true },
+                    title: { type: 'string', required: true },
+                    url: { type: 'string', required: true },
+                    excerpt: { type: 'string', required: true },
+                    score: { type: 'number', required: true },
+                  },
+                },
+              },
+              indexState: { type: 'string', required: true },
+            },
+          },
+          render: (_args, value) => [{ type: 'text', text: `Knowledge search returned ${value.results?.length ?? 0} result(s).` }],
+        },
+        execute: args => this.knowledgeBase.search(args.query, args.topK),
+        presentCall: args => ({ card: 'generic', title: `Search Lark knowledge base: ${args.query}`, kind: 'execute', rawInput: args.query }),
+      }))
+      agentCtx.tools.register(defineTool({
+        name: 'feishu_kb_read',
+        description: 'Read one document returned by feishu_kb_search from the configured Feishu/Lark knowledge base. The nodeToken must come from a search result.',
+        parameters: {
+          nodeToken: { type: 'string', required: true, description: 'Knowledge-base node token returned by feishu_kb_search.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              nodeToken: { type: 'string', required: true },
+              title: { type: 'string', required: true },
+              url: { type: 'string', required: true },
+              content: { type: 'string', required: true },
+              truncated: { type: 'boolean', required: true },
+            },
+          },
+          render: (_args, value) => [{ type: 'text', text: `Read knowledge document: ${value.title}` }],
+        },
+        execute: args => this.knowledgeBase.read(args.nodeToken),
+        presentCall: args => ({ card: 'generic', title: 'Read Lark knowledge document', kind: 'execute', rawInput: args.nodeToken }),
       }))
       agentCtx.on('session/event', (_session, event) => {
         const delta = textDeltaFromAssistantChunk(event)

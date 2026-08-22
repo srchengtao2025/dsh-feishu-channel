@@ -15,9 +15,27 @@ test('credential test sends secrets only in the request body', async () => {
   })
   assert.deepEqual(result, { ok: true, expire: 7200 })
   assert.equal(request.options.headers['content-type'], 'application/json; charset=utf-8')
+  assert.equal(request.url, 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal')
   assert.deepEqual(JSON.parse(request.options.body), {
     app_id: 'cli_0123456789abcdef', app_secret: 'secret-value',
   })
+})
+
+test('credential test selects the Lark international domain explicitly', async () => {
+  let requestUrl
+  await testFeishuCredentials({
+    appId: 'cli_0123456789abcdef',
+    appSecret: 'secret-value',
+    domain: 'lark',
+    fetchImpl: async url => {
+      requestUrl = url
+      return { ok: true, json: async () => ({ code: 0, expire: 7200 }) }
+    },
+  })
+  assert.equal(requestUrl, 'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal')
+  await assert.rejects(() => testFeishuCredentials({
+    appId: 'cli_0123456789abcdef', appSecret: 'secret-value', domain: 'invalid',
+  }), /平台域/)
 })
 
 test('credential test redacts token response and reports API errors', async () => {

@@ -2,7 +2,7 @@
 
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
-import { ConfigApiClient, HELP_TEXT, configUpdate, formatConfig, parseCliArgs } from './cli-core.js'
+import { ConfigApiClient, HELP_TEXT, configSavePayload, formatConfig, parseCliArgs } from './cli-core.js'
 
 async function readStdin() {
   const chunks = []
@@ -49,11 +49,14 @@ async function interactiveConfigure(client) {
   const current = payload.config
   stdout.write(`${formatConfig(payload)}\n\n`)
   const rl = createInterface({ input: stdin, output: stdout })
+  const domain = (await rl.question(`平台域 feishu/lark [${current.domain}]: `)).trim().toLowerCase() || current.domain
+  if (!['feishu', 'lark'].includes(domain)) throw new Error('平台域必须是 feishu 或 lark')
   const appId = (await rl.question(`App ID [${current.appId || '未配置'}]: `)).trim() || current.appId
   const allowInput = await rl.question(`允许用户 open_id（逗号分隔，输入 - 清空） [${current.allowedOpenIds.join(',')}]: `)
   const workspace = (await rl.question(`默认工作目录 [${current.defaultWorkspace}]: `)).trim() || current.defaultWorkspace
   const acknowledgement = await rl.question(`处理中提示（输入 - 关闭） [${current.acknowledgement}]: `)
   const allowGroupAt = yes(await rl.question(`允许群聊 @机器人？ [${current.allowGroupAt ? 'Y/n' : 'y/N'}]: `), current.allowGroupAt)
+  const streamingEnabled = yes(await rl.question(`允许流式输出？ [${current.streamingEnabled ? 'Y/n' : 'y/N'}]: `), current.streamingEnabled)
   const fileTransferEnabled = yes(await rl.question(`允许通过飞书收发文件？ [${current.fileTransferEnabled ? 'Y/n' : 'y/N'}]: `), current.fileTransferEnabled)
   const maxFileInput = (await rl.question(`单个文件大小上限 MB [${current.maxFileSizeMb}]: `)).trim()
   const maxFileSizeMb = maxFileInput ? Number(maxFileInput) : current.maxFileSizeMb
@@ -67,11 +70,13 @@ async function interactiveConfigure(client) {
       : current.allowedOpenIds
   let result = await client.saveConfig({
     ...current,
+    domain,
     appId,
     allowedOpenIds,
     defaultWorkspace: workspace,
     acknowledgement: acknowledgement.trim() === '-' ? '' : acknowledgement || current.acknowledgement,
     allowGroupAt,
+    streamingEnabled,
     fileTransferEnabled,
     maxFileSizeMb,
     enabled: false,
@@ -80,7 +85,7 @@ async function interactiveConfigure(client) {
   stdout.write(`\n配置已保存，通道保持停用。\n${formatConfig(result)}\n`)
   if (enableNow) {
     try {
-      await client.testCredentials({ appId, ...(appSecret ? { appSecret } : {}) })
+      await client.testCredentials({ appId, domain, ...(appSecret ? { appSecret } : {}) })
       result = await client.saveConfig({ ...result.config, confirmEnable: true })
       stdout.write(`\n凭据测试通过，通道已启用。\n${formatConfig(result)}\n`)
     } catch (error) {
@@ -107,6 +112,7 @@ async function main() {
   if (parsed.command === 'test') {
     const appSecret = parsed.values['app-secret-stdin'] ? await readStdin() : undefined
     const result = await client.testCredentials({
+      ...(parsed.values.domain ? { domain: parsed.values.domain } : {}),
       ...(parsed.values['app-id'] ? { appId: parsed.values['app-id'] } : {}),
       ...(appSecret ? { appSecret } : {}),
     })
@@ -121,8 +127,7 @@ async function main() {
       ...(parsed.command === 'enable' ? { enable: true } : {}),
       ...(parsed.command === 'disable' ? { disable: true } : {}),
     }
-    let nextConfig = configUpdate(payload.config, values, appSecret)
-    if (parsed.command === 'enable' || parsed.values.enable) nextConfig = { ...nextConfig, confirmEnable: true }
+    const nextConfig = configSavePayload(payload.config, values, appSecret)
     const result = await client.saveConfig(nextConfig)
     stdout.write(`${formatConfig(result)}\n`)
     return
@@ -135,7 +140,8 @@ async function main() {
     const payload = await client.getConfig()
     const existing = new Set(payload.config.allowedOpenIds)
     for (const id of ids) action === 'add' ? existing.add(id) : existing.delete(id)
-    const result = await client.saveConfig({ ...payload.config, allowedOpenIds: [...existing] })
+    const nextConfig = configSavePayload(payload.config, { 'allow-open-id': [...existing] })
+    const result = await client.saveConfig(nextConfig)
     stdout.write(`${formatConfig(result)}\n`)
     return
   }

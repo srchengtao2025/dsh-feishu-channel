@@ -9,6 +9,7 @@ export function parseCliArgs(args) {
     strict: true,
     options: {
       url: { type: 'string', default: DEFAULT_URL },
+      domain: { type: 'string' },
       'app-id': { type: 'string' },
       'app-secret-stdin': { type: 'boolean', default: false },
       'clear-app-secret': { type: 'boolean', default: false },
@@ -19,16 +20,25 @@ export function parseCliArgs(args) {
       disable: { type: 'boolean', default: false },
       'group-at': { type: 'boolean', default: false },
       'no-group-at': { type: 'boolean', default: false },
+      streaming: { type: 'boolean', default: false },
+      'no-streaming': { type: 'boolean', default: false },
       files: { type: 'boolean', default: false },
       'no-files': { type: 'boolean', default: false },
       'max-file-mb': { type: 'string' },
+      knowledge: { type: 'boolean', default: false },
+      'no-knowledge': { type: 'boolean', default: false },
+      'knowledge-url': { type: 'string' },
+      'knowledge-sync-minutes': { type: 'string' },
+      'knowledge-max-results': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
   const command = parsed.positionals[0] ?? 'configure'
   if (parsed.values.enable && parsed.values.disable) throw new Error('--enable 与 --disable 不能同时使用')
   if (parsed.values['group-at'] && parsed.values['no-group-at']) throw new Error('--group-at 与 --no-group-at 不能同时使用')
+  if (parsed.values.streaming && parsed.values['no-streaming']) throw new Error('--streaming 与 --no-streaming 不能同时使用')
   if (parsed.values.files && parsed.values['no-files']) throw new Error('--files 与 --no-files 不能同时使用')
+  if (parsed.values.knowledge && parsed.values['no-knowledge']) throw new Error('--knowledge 与 --no-knowledge 不能同时使用')
   return { command, positionals: parsed.positionals.slice(1), values: parsed.values }
 }
 
@@ -86,8 +96,12 @@ export class ConfigApiClient {
 }
 
 export function configUpdate(current, values, appSecret) {
+  if (values.domain !== undefined && !['feishu', 'lark'].includes(values.domain)) {
+    throw new Error('--domain 必须是 feishu 或 lark')
+  }
   const next = {
     ...current,
+    ...(values.domain === undefined ? {} : { domain: values.domain }),
     ...(values['app-id'] === undefined ? {} : { appId: values['app-id'] }),
     ...(values['allow-open-id'] === undefined ? {} : { allowedOpenIds: values['allow-open-id'] }),
     ...(values.workspace === undefined ? {} : { defaultWorkspace: values.workspace }),
@@ -96,27 +110,40 @@ export function configUpdate(current, values, appSecret) {
     ...(values.disable ? { enabled: false } : {}),
     ...(values['group-at'] ? { allowGroupAt: true } : {}),
     ...(values['no-group-at'] ? { allowGroupAt: false } : {}),
+    ...(values.streaming ? { streamingEnabled: true } : {}),
+    ...(values['no-streaming'] ? { streamingEnabled: false } : {}),
     ...(values.files ? { fileTransferEnabled: true } : {}),
     ...(values['no-files'] ? { fileTransferEnabled: false } : {}),
     ...(values['max-file-mb'] === undefined ? {} : { maxFileSizeMb: Number(values['max-file-mb']) }),
+    ...(values.knowledge ? { knowledgeBaseEnabled: true } : {}),
+    ...(values['no-knowledge'] ? { knowledgeBaseEnabled: false } : {}),
+    ...(values['knowledge-url'] === undefined ? {} : { knowledgeBaseUrl: values['knowledge-url'] }),
+    ...(values['knowledge-sync-minutes'] === undefined ? {} : { knowledgeBaseSyncMinutes: Number(values['knowledge-sync-minutes']) }),
+    ...(values['knowledge-max-results'] === undefined ? {} : { knowledgeBaseMaxResults: Number(values['knowledge-max-results']) }),
     ...(appSecret === undefined ? {} : { appSecret }),
     ...(values['clear-app-secret'] ? { clearAppSecret: true } : {}),
   }
   return next
 }
 
+export function configSavePayload(current, values, appSecret) {
+  const next = configUpdate(current, values, appSecret)
+  return next.enabled ? { ...next, confirmEnable: true } : next
+}
+
 export function formatConfig(payload) {
   const config = payload.config
   const status = payload.status
-  const streamMode = {
+  const streamMode = config.streamingEnabled === false ? '已禁用' : ({
     cardkit: '飞书原生流式卡片',
     'text-edit': '文本消息编辑（自动降级）',
     unknown: '尚未执行流式任务',
-  }[status.streamMode] || status.streamMode || '未知'
+  }[status.streamMode] || status.streamMode || '未知')
   return [
     `插件状态: ${status.state}${status.detail ? ` (${status.detail})` : ''}`,
     `流式输出: ${streamMode}`,
     `通道启用: ${config.enabled ? '是' : '否'}`,
+    `平台域: ${config.domain === 'lark' ? 'Lark 国际版' : '飞书国内版'}`,
     `App ID: ${config.appId || '未配置'}`,
     `App Secret: ${payload.secretConfigured ? '已配置（不回显）' : '未配置'}`,
     `允许用户: ${config.allowedOpenIds.length ? config.allowedOpenIds.join(', ') : '空（私聊默认允许，群聊拒绝）'}`,
@@ -124,6 +151,9 @@ export function formatConfig(payload) {
     `群聊 @机器人: ${config.allowGroupAt ? '允许' : '禁用'}`,
     `文件传输: ${config.fileTransferEnabled ? `允许（单文件 ${config.maxFileSizeMb} MB）` : '禁用'}`,
     `文件资源权限: ${status.fileResourceGranted === true ? '已授权' : status.fileResourceGranted === false ? '未授权（需要 im:resource）' : '未知'}`,
+    `知识库检索: ${config.knowledgeBaseEnabled ? '启用' : '禁用'}`,
+    `知识库链接: ${config.knowledgeBaseUrl || '未配置'}`,
+    `知识库同步: ${payload.knowledgeBaseStatus?.state || 'unknown'}${payload.knowledgeBaseStatus?.detail ? ` (${payload.knowledgeBaseStatus.detail})` : ''}`,
     `处理中提示: ${config.acknowledgement || '关闭'}`,
   ].join('\n')
 }
@@ -144,6 +174,7 @@ export const HELP_TEXT = `DSH 飞书通道 CLI
 
 set/test 选项：
   --app-id <cli_xxx>           设置 App ID
+  --domain <feishu|lark>       设置飞书国内版或 Lark 国际版
   --app-secret-stdin           从 stdin 安全读取 App Secret
   --clear-app-secret           清除保存的 App Secret
   --allow-open-id <ou_xxx>     替换白名单，可重复
@@ -151,8 +182,13 @@ set/test 选项：
   --ack <文本>                 设置处理中提示，空字符串可关闭
   --enable | --disable         保存时启停通道
   --group-at | --no-group-at   允许或禁止群聊 @机器人
+  --streaming | --no-streaming 允许或禁止流式输出
   --files | --no-files         允许或禁止文件传输
   --max-file-mb <1-30>         设置单个文件大小上限
+  --knowledge | --no-knowledge 启用或禁用知识库检索
+  --knowledge-url <URL>         设置飞书/Lark Wiki 链接
+  --knowledge-sync-minutes <N>  设置同步间隔（5-1440 分钟）
+  --knowledge-max-results <N>   设置默认检索结果数（1-10）
   --url <URL>                  本地 DSH 地址，默认 ${DEFAULT_URL}
 
 示例：

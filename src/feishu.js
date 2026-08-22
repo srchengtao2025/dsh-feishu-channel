@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto'
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { chunkText } from './message.js'
 
-const TOKEN_ENDPOINT = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
+const OPEN_API_DOMAINS = Object.freeze({
+  feishu: 'https://open.feishu.cn',
+  lark: 'https://open.larksuite.com',
+})
 
 function safeError(error) {
   if (error instanceof Error) return error.message.replace(/cli_[0-9a-fA-F]{16}/g, 'cli_***')
@@ -72,8 +75,10 @@ export class TextEditStreamController {
   }
 }
 
-export async function testFeishuCredentials({ appId, appSecret, fetchImpl = fetch }) {
-  const response = await fetchImpl(TOKEN_ENDPOINT, {
+export async function testFeishuCredentials({ appId, appSecret, domain = 'feishu', fetchImpl = fetch }) {
+  const baseUrl = OPEN_API_DOMAINS[domain]
+  if (!baseUrl) throw new Error('平台域必须是 feishu 或 lark')
+  const response = await fetchImpl(`${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
     method: 'POST',
     headers: { 'content-type': 'application/json; charset=utf-8' },
     body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
@@ -131,6 +136,7 @@ export class FeishuChannel {
     }
 
     this.setStatus('connecting', '正在连接飞书长连接')
+    const sdkDomain = config.domain === 'lark' ? Lark.Domain.Lark : Lark.Domain.Feishu
     const sdkLogger = {
       error: (...args) => this.logger.error(args.map(String).join(' ')),
       warn: (...args) => this.logger.warn(args.map(String).join(' ')),
@@ -143,6 +149,7 @@ export class FeishuChannel {
       appId: config.appId,
       appSecret,
       appType: Lark.AppType.SelfBuild,
+      domain: sdkDomain,
       logger: sdkLogger,
       loggerLevel: Lark.LoggerLevel.warn,
       source: 'dsh-feishu-channel',
@@ -150,6 +157,7 @@ export class FeishuChannel {
     const outboundChannel = new Lark.LarkChannel({
       appId: config.appId,
       appSecret,
+      domain: sdkDomain,
       logger: sdkLogger,
       loggerLevel: Lark.LoggerLevel.warn,
       source: 'dsh-feishu-channel',
@@ -175,6 +183,7 @@ export class FeishuChannel {
     const wsClient = new Lark.WSClient({
       appId: config.appId,
       appSecret,
+      domain: sdkDomain,
       logger: sdkLogger,
       loggerLevel: Lark.LoggerLevel.warn,
       autoReconnect: true,

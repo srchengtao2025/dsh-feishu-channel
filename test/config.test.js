@@ -17,6 +17,12 @@ test('normalizeConfig rejects unsafe or malformed values', () => {
   assert.equal(result.errors.length, 3)
 })
 
+test('platform domain defaults to Feishu and accepts only Feishu or Lark', () => {
+  assert.equal(normalizeConfig({}).config.domain, 'feishu')
+  assert.equal(normalizeConfig({ domain: 'LARK' }).config.domain, 'lark')
+  assert.match(normalizeConfig({ domain: 'invalid' }).errors.join(''), /feishu 或 lark/)
+})
+
 test('empty allowlist allows private chat but not group chat', () => {
   assert.equal(isSenderAllowed({ allowedOpenIds: [] }, { openId: 'ou_a', chatType: 'p2p' }), true)
   assert.equal(isSenderAllowed({ allowedOpenIds: [] }, { openId: 'ou_a', chatType: 'group' }), false)
@@ -34,6 +40,30 @@ test('file transfer limits stay within the bidirectional Feishu maximum', () => 
   assert.equal(normalizeConfig({ maxFileSizeMb: 30 }).errors.length, 0)
   assert.match(normalizeConfig({ maxFileSizeMb: 31 }).errors.join(''), /1 到 30 MB/)
   assert.equal(normalizeConfig({ fileTransferEnabled: false }).config.fileTransferEnabled, false)
+})
+
+test('streaming can be explicitly disabled without disabling the channel', () => {
+  const config = normalizeConfig({ enabled: true, appId: 'cli_0123456789abcdef', streamingEnabled: false }).config
+  assert.equal(config.enabled, true)
+  assert.equal(config.streamingEnabled, false)
+})
+
+test('knowledge base settings require a matching platform wiki URL', () => {
+  const valid = normalizeConfig({
+    domain: 'lark',
+    knowledgeBaseEnabled: true,
+    knowledgeBaseUrl: 'https://tenant.larksuite.com/wiki/root-token',
+  })
+  assert.equal(valid.errors.length, 0)
+  assert.equal(valid.config.knowledgeBaseSyncMinutes, 15)
+  assert.equal(valid.config.knowledgeBaseMaxResults, 5)
+
+  const invalid = normalizeConfig({
+    domain: 'lark',
+    knowledgeBaseEnabled: true,
+    knowledgeBaseUrl: 'https://tenant.feishu.cn/wiki/root-token',
+  })
+  assert.match(invalid.errors.join(''), /Lark/)
 })
 
 test('model CLI updates only its own settings section and credential reference', () => {
