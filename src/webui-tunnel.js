@@ -8,6 +8,8 @@ import net from 'node:net'
 
 const DEFAULT_TTL_MINUTES = 30
 const MAX_TTL_MINUTES = 60
+const CONNECTION_CLIENT_PATH = '/plugins/@deepseek-ai/dsh-client-connection/client.js'
+const LOOPBACK_CLASSIFIER = /isLoopback:\s*pageLocation === void 0 \|\| isLoopbackHostname\(pageLocation\.hostname\),/
 
 export function parseWebUiCommand(text) {
   const match = String(text ?? '').trim().match(/^\/webui(?:\s+(stop|status|(?:(\d{1,2})(?:m|min)?)))?$/i)
@@ -60,9 +62,34 @@ export function buildUpstreamHeaders(headers, targetPort, connection = 'close') 
     }
   }
   delete upstreamHeaders.forwarded
+  delete upstreamHeaders['accept-encoding']
+  delete upstreamHeaders['cf-connecting-ip']
+  delete upstreamHeaders['cf-ipcountry']
+  delete upstreamHeaders['cf-ray']
+  delete upstreamHeaders['cdn-loop']
+  delete upstreamHeaders['x-forwarded-for']
   delete upstreamHeaders['x-forwarded-host']
   delete upstreamHeaders['x-forwarded-proto']
+  delete upstreamHeaders['x-real-ip']
   return upstreamHeaders
+}
+
+export function isConnectionClientRequest(url) {
+  try {
+    return new URL(String(url ?? '/'), 'http://127.0.0.1').pathname === CONNECTION_CLIENT_PATH
+  } catch {
+    return false
+  }
+}
+
+export function enableAuthenticatedHostCapabilities(source) {
+  const text = String(source ?? '')
+  const matches = text.match(new RegExp(LOOPBACK_CLASSIFIER.source, 'g')) ?? []
+  if (matches.length !== 1) return { patched: false, source: text }
+  return {
+    patched: true,
+    source: text.replace(LOOPBACK_CLASSIFIER, 'isLoopback: true, /* authenticated temporary WebUI */'),
+  }
 }
 
 export class WebUiTunnelManager {
@@ -174,6 +201,7 @@ export class WebUiTunnelManager {
 
   proxyHttp(req, res, setCookie) {
     const headers = buildUpstreamHeaders(req.headers, this.targetPort)
+    const patchConnectionClient = isConnectionClientRequest(req.url)
     const upstream = http.request({
       hostname: '127.0.0.1',
       port: this.targetPort,
@@ -190,8 +218,29 @@ export class WebUiTunnelManager {
           setCookie,
         ]
       }
-      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders)
-      upstreamRes.pipe(res)
+      if (!patchConnectionClient) {
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders)
+        upstreamRes.pipe(res)
+        return
+      }
+
+      const chunks = []
+      upstreamRes.on('data', chunk => chunks.push(chunk))
+      upstreamRes.on('end', () => {
+        const body = Buffer.concat(chunks)
+        const patched = enableAuthenticatedHostCapabilities(body.toString('utf8'))
+        const output = patched.patched ? Buffer.from(patched.source) : body
+        if (!patched.patched) {
+          this.logger.warn('临时 Web UI 未找到 DSH 连接能力标记；模型设置仍将保持只读')
+        }
+        delete responseHeaders['content-encoding']
+        delete responseHeaders['transfer-encoding']
+        delete responseHeaders.etag
+        responseHeaders['cache-control'] = 'private, no-store'
+        responseHeaders['content-length'] = String(output.length)
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders)
+        res.end(output)
+      })
     })
     upstream.on('error', error => {
       this.logger.warn(`临时 Web UI 代理错误：${error.message}`)

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 0.10.2 - 2026-08-23
+
+- Fixed the authenticated temporary `/webui` showing DSH model settings as read-only or unavailable on public tunnel hostnames.
+- Kept DSH loopback-only while enabling host configuration capabilities only inside the random-token temporary proxy.
+- Removed public proxy forwarding headers before requests reach the local DSH listener.
+
 ## 0.10.1 - 2026-08-21
 
 - Fixed the optional knowledge-search result limit schema for DeepSeek Harness runtime tool validation.

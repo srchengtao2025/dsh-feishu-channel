@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { authorizeWebUiRequest, buildUpstreamHeaders, parseWebUiCommand, WebUiTunnelManager } from '../src/webui-tunnel.js'
+import {
+  authorizeWebUiRequest,
+  buildUpstreamHeaders,
+  enableAuthenticatedHostCapabilities,
+  isConnectionClientRequest,
+  parseWebUiCommand,
+  WebUiTunnelManager,
+} from '../src/webui-tunnel.js'
 
 test('webui command parses default, bounded ttl and lifecycle commands', () => {
   assert.deepEqual(parseWebUiCommand('/webui'), { kind: 'start', minutes: 30 })
@@ -33,6 +40,9 @@ test('webui proxy normalizes browser origin metadata for loopback DSH', () => {
     origin: 'https://random.trycloudflare.com',
     referer: 'https://random.trycloudflare.com/chat?id=1',
     forwarded: 'host=random.trycloudflare.com',
+    'accept-encoding': 'gzip, br',
+    'cf-connecting-ip': '203.0.113.9',
+    'x-forwarded-for': '203.0.113.9',
     'x-forwarded-host': 'random.trycloudflare.com',
   }, 3080, 'Upgrade')
 
@@ -41,7 +51,23 @@ test('webui proxy normalizes browser origin metadata for loopback DSH', () => {
   assert.equal(headers.referer, 'http://127.0.0.1:3080/chat?id=1')
   assert.equal(headers.connection, 'Upgrade')
   assert.equal(headers.forwarded, undefined)
+  assert.equal(headers['accept-encoding'], undefined)
+  assert.equal(headers['cf-connecting-ip'], undefined)
+  assert.equal(headers['x-forwarded-for'], undefined)
   assert.equal(headers['x-forwarded-host'], undefined)
+})
+
+test('authenticated webui promotes only the DSH connection client to host capabilities', () => {
+  assert.equal(isConnectionClientRequest('/plugins/@deepseek-ai/dsh-client-connection/client.js?rev=abc'), true)
+  assert.equal(isConnectionClientRequest('/plugins/example/client.js'), false)
+
+  const source = 'const state = { isLoopback: pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname), ready: true }'
+  const patched = enableAuthenticatedHostCapabilities(source)
+  assert.equal(patched.patched, true)
+  assert.match(patched.source, /isLoopback: true/)
+
+  const unrelated = enableAuthenticatedHostCapabilities('const state = { ready: true }')
+  assert.deepEqual(unrelated, { patched: false, source: 'const state = { ready: true }' })
 })
 
 test('webui manager discovers cloudflared from PATH by default', () => {

@@ -17,7 +17,7 @@
 从 GitHub Releases 下载最新的 `dsh-feishu-channel-*.tgz`，然后安装到 Harness Web profile：
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.2.tgz
 ```
 
 如果首次安装出现 `ERR_PNPM_IGNORED_BUILDS`，pnpm 会在 Web profile 的 `pnpm-workspace.yaml` 中生成 `protobufjs` 待审核项。这个生命周期脚本不是插件运行所必需的，可将生成的占位值明确改为 `false`，保留 DSH 的严格供应链保护，然后重新执行安装：
@@ -35,7 +35,7 @@ cd dsh-feishu-channel
 npm ci
 npm test
 npm pack
-dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.2.tgz
 ```
 
 ## 当前能力
@@ -66,7 +66,7 @@ npm pack
 安装到 DSH 的 Web profile：
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.2.tgz
 ```
 
 重启 DSH 后，通过 SSH 隧道打开配置页：
@@ -168,6 +168,8 @@ dsh-model-config credential unset --ref DEEPSEEK_API_KEY
 ```
 
 命令会启动一个 Cloudflare Quick Tunnel，并返回带随机访问令牌的临时 URL。默认有效期 30 分钟，最长 60 分钟。URL 是持有即访问凭证，请勿转发；到期或执行 `/webui stop` 后自动失效。
+
+临时地址中的随机令牌同时授权 DSH 的模型与设置界面；只有已经加入允许用户列表的可信管理员才能生成。关闭页面后建议立即执行 `/webui stop`，不要把它当作长期管理入口。
 
 服务器需要安装 `cloudflared` 并确保它在服务的 `PATH` 中；也可以通过 `DSH_CLOUDFLARED_PATH` 指定绝对路径。Quick Tunnel 由 Cloudflare 分配随机 `trycloudflare.com` 子域名，适合临时调试，不适合作为长期生产入口。
 

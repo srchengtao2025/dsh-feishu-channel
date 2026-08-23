@@ -8,7 +8,7 @@
 
 `dsh-feishu-channel` is a community-maintained plugin that connects a DeepSeek Harness instance to a Feishu/Lark custom enterprise app over a WebSocket long connection. The Harness server can remain bound to loopback and does not need a new public inbound port.
 
-> Status: Developer Preview. Version 0.10.1 is developed and tested against DeepSeek Harness `0.1.0-rc.8`. Re-run the test suite after upgrading Harness.
+> Status: Developer Preview. Version 0.10.2 is developed and tested against DeepSeek Harness `0.1.0-rc.8`. Re-run the test suite after upgrading Harness.
 
 ## Features
 
@@ -34,7 +34,7 @@
 Download the latest `dsh-feishu-channel-*.tgz` from GitHub Releases and install it into the Harness Web profile:
 
 ```bash
-dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.2.tgz
 ```
 
 If the first install reports `ERR_PNPM_IGNORED_BUILDS`, pnpm will add a pending `protobufjs` entry to the Web profile's `pnpm-workspace.yaml`. Its lifecycle script is not required by this plugin; explicitly set the generated placeholder to `false`, keep DSH's strict supply-chain policy enabled, and rerun the install:
@@ -52,7 +52,7 @@ cd dsh-feishu-channel
 npm ci
 npm test
 npm pack
-dsh plugin --profile web add ./dsh-feishu-channel-0.10.1.tgz
+dsh plugin --profile web add ./dsh-feishu-channel-0.10.2.tgz
 ```
 
 Restart Harness, keep it bound to loopback, and open the configuration page through an SSH tunnel:
@@ -62,6 +62,10 @@ ssh -N -L 3080:127.0.0.1:3080 user@YOUR_SERVER
 ```
 
 Open `http://127.0.0.1:3080/feishu-channel`.
+
+## Temporary Web UI
+
+An explicitly allowlisted administrator can send `/webui` to create a random-token Cloudflare Quick Tunnel for 30 minutes, or `/webui 15m` for a shorter lifetime. The capability URL authorizes the Harness model and settings surfaces, so do not forward it or use it as a permanent administration endpoint. Close it with `/webui stop` as soon as the task is complete.
 
 ## Feishu app setup
 
