@@ -38,7 +38,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.56.0"
+    "@larksuiteoapi/node-sdk": "^1.73.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
